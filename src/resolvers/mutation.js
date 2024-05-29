@@ -4,21 +4,37 @@ const {
   AuthenticationError,
   ForbiddenError,
 } = require('apollo-server-express');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
 const gravatar = require('../util/gravatar');
 
 module.exports = {
-  newNote: async (parent, args, { models }) => {
+  newNote: async (parent, args, { models, user }) => {
+    if (!user) {
+      throw new AuthenticationError(
+        'Вы должны быть авторизованы чтобы создать заметку',
+      );
+    }
+
     return await models.Note.create({
       content: args.content,
-      author: 'Adam Scott',
+      author: mongoose.Types.ObjectId(user.id),
     });
   },
 
-  deleteNote: async (parent, { id }, { models }) => {
+  deleteNote: async (parent, { id }, { models, user }) => {
+    if (!user) {
+      throw new AuthenticationError(
+        'Вы должны быть авторизованы чтобы удалить заметку',
+      );
+    }
+    const note = await models.Note.findById(id);
+    if (note && String(note.author) !== user.id) {
+      throw new ForbiddenError('У вас нет разрешения удалять эту заметку');
+    }
     try {
-      await models.Note.findOneAndRemove({ _id: id });
+      await note.remove();
       return true;
     } catch (err) {
       return false;
@@ -26,6 +42,15 @@ module.exports = {
   },
 
   updateNote: async (parent, { content, id }, { models }) => {
+    if (!user) {
+      throw new AuthenticationError(
+        'Вы должны быть авторизованы чтобы изменить заметку',
+      );
+    }
+    const note = await models.Note.findById(id);
+    if (note && String(note.author) !== user.id) {
+      throw new ForbiddenError('У вас нет разрешения изменять эту заметку');
+    }
     return await models.Note.findOneAndUpdate(
       {
         _id: id,
@@ -41,7 +66,7 @@ module.exports = {
     );
   },
 
-  signUp: async (parent, { username, email, password }, { models }) => {
+  signUp: async (parent, { username, email, password }, { models, user }) => {
     email = email.trim().toLowerCase();
     const hashed = await bcrypt.hash(password, 10);
     const avatar = gravatar(email);
@@ -79,5 +104,46 @@ module.exports = {
     }
 
     return jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+  },
+
+  toggleFavorite: async (parent, { id }, { models, user }) => {
+    if (!user) {
+      throw new AuthenticationError();
+    }
+
+    let noteCheck = await models.Note.findById(id);
+    const hasUser = noteCheck.favoritedBy.indexOf(user.id);
+
+    if (hasUser >= 0) {
+      return await models.Note.findByIdAndUpdate(
+        id,
+        {
+          $pull: {
+            favoritedBy: mongoose.Types.ObjectId(user.id),
+          },
+          $inc: {
+            favoriteCount: -1,
+          },
+        },
+        {
+          new: true,
+        },
+      );
+    } else {
+      return await models.Note.findByIdAndUpdate(
+        id,
+        {
+          $push: {
+            favoritedBy: mongoose.Types.ObjectId(user.id),
+          },
+          $inc: {
+            favoriteCount: 1,
+          },
+        },
+        {
+          new: true,
+        },
+      );
+    }
   },
 };
